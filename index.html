@@ -810,24 +810,25 @@
           <button onclick="lockAppSession()" class="pill ripple"><i class="fa-solid fa-lock t-acc"></i>Bloquear Sessão (exigir PIN)</button>
         </div>
         <div class="glass-card p-4 rounded-2xl space-y-3">
-          <h4 class="text-xs font-bold t-main">Sincronização entre dispositivos</h4>
-          <p class="text-[11px] t-soft">Não usa nenhum servidor meu: os dados são guardados num <b class="t-main">Gist privado da tua própria conta GitHub</b>. Nos outros dispositivos só tens de colar o mesmo token.</p>
-          <div id="gh-state"></div>
+          <h4 class="text-xs font-bold t-main">Sincronização entre dispositivos (JSONBin)</h4>
+          <p class="text-[11px] t-soft">Os dados ficam guardados num bin do JSONBin, tal como no site das compras. Usa o <b class="t-main">mesmo ID em todos os dispositivos</b> e eles passam a mostrar a mesma informação.</p>
+          <div id="jb-state"></div>
           <p id="sync-detail" class="text-[11px] t-soft"></p>
-          <input id="gh-token" type="password" autocomplete="off" class="glass-input" placeholder="Token do GitHub (ghp_…)">
+          <label class="fld"><span>ID do bin</span><input id="jb-id" class="glass-input" autocomplete="off" placeholder="Ex.: 6a998eebf5f4af5e2965f3df"></label>
+          <label class="fld"><span>Master Key (opcional, só se o bin for privado)</span><input id="jb-key" type="password" class="glass-input" autocomplete="off" placeholder="$2a$10$…"></label>
           <div class="flex flex-wrap gap-2">
-            <button onclick="ghConnect()" class="btn-primary ripple text-xs px-3 py-2"><i class="fa-solid fa-link"></i>Ligar e sincronizar</button>
+            <button onclick="jbConnect()" class="btn-primary ripple text-xs px-3 py-2"><i class="fa-solid fa-link"></i>Guardar e sincronizar</button>
             <button onclick="syncNow(true)" class="pill ripple"><i class="fa-solid fa-rotate t-acc"></i>Sincronizar agora</button>
-            <button id="gh-disconnect" onclick="ghDisconnect()" class="pill ripple hidden"><i class="fa-solid fa-xmark"></i>Desligar</button>
+            <button id="jb-disconnect" onclick="jbDisconnect()" class="pill ripple hidden"><i class="fa-solid fa-xmark"></i>Desligar</button>
           </div>
           <details class="text-[11px] t-soft">
-            <summary class="cursor-pointer t-acc">Como criar o token (1 minuto)</summary>
+            <summary class="cursor-pointer t-acc">Como criar o bin (1 minuto)</summary>
             <ol class="list-decimal pl-5 space-y-1 mt-2">
-              <li>Abre <a class="t-acc underline" target="_blank" rel="noopener" href="https://github.com/settings/tokens/new?scopes=gist&amp;description=Sidera">github.com/settings/tokens/new</a> (token clássico).</li>
-              <li>Deixa marcada <b>apenas</b> a permissão <b>gist</b>, define a validade que quiseres e gera o token.</li>
-              <li>Cola-o aqui e carrega em «Ligar». Repete no telemóvel com o mesmo token: o Gist é encontrado sozinho.</li>
+              <li>Em <a class="t-acc underline" target="_blank" rel="noopener" href="https://jsonbin.io">jsonbin.io</a>, entra na tua conta e carrega em <b>Create Bin</b>.</li>
+              <li>Escreve <code>{"sidera":true}</code>, guarda, e copia o <b>Bin ID</b>.</li>
+              <li>Cola-o aqui, em cada dispositivo. <b>Não uses o ID do site das compras</b>: ia apagar essa lista.</li>
             </ol>
-            <p class="mt-2">O token fica só neste navegador. Quem tiver o token acede aos teus Gists, por isso não o partilhes.</p>
+            <p class="mt-2">Quem souber o ID de um bin público consegue ler os dados. Se quiseres proteger, cria o bin como privado e usa a Master Key.</p>
           </details>
         </div>
         <div class="glass-card p-4 rounded-2xl space-y-2">
@@ -1008,9 +1009,13 @@
     /* =====================================================
        2. ESTADO + SINCRONIZAÇÃO (GitHub Gist privado, na conta do próprio utilizador)
        ===================================================== */
-    const GH_FILE = 'sidera-data.json', GH_DESC = 'Sidera Ecosystem Sync';
-    const ghCfg = () => { try { return JSON.parse(localStorage.getItem('sidera_gh') || 'null') || {}; } catch (e) { return {}; } };
-    const ghSave = c => { try { localStorage.setItem('sidera_gh', JSON.stringify(c)); } catch (e) { } };
+    // Mesmo sistema do site das compras: um "bin" do JSONBin (GET /latest e PUT).
+    // Podes fixar aqui o ID do bin para todos os dispositivos, ou colá-lo em Definições › Segurança & Dados.
+    const JB_DEFAULT_ID = '';
+    const jbCfg = () => { try { return JSON.parse(localStorage.getItem('sidera_jb') || 'null') || {}; } catch (e) { return {}; } };
+    const jbSave = c => { try { localStorage.setItem('sidera_jb', JSON.stringify(c)); } catch (e) { } };
+    const jbBinId = () => String(jbCfg().binId || JB_DEFAULT_ID || '').trim();
+    const jbHeaders = extra => Object.assign({}, jbCfg().key ? { 'X-Master-Key': jbCfg().key } : {}, extra || {});
 
     const COLLECTIONS = ['tasks', 'wishlist', 'stores', 'finances', 'notes', 'shortcuts', 'events', 'apps', 'customtabs'];
     const BUCKETS = {
@@ -1093,7 +1098,10 @@
         const m = new Map();
         [...(b[c] || []), ...(a[c] || [])].forEach(it => {
           const cur = m.get(it.id);
-          if (!cur || (it._u || 0) >= (cur._u || 0)) m.set(it.id, it);
+          if (!cur || (it._u || 0) >= (cur._u || 0)) {
+            if (cur && it.imgStripped && !it.img && cur.img) it = { ...it, img: cur.img };
+            m.set(it.id, it);
+          } else if (cur.imgStripped && !cur.img && it.img) m.set(it.id, { ...cur, img: it.img });
         });
         out[c] = [...m.values()]
           .filter(it => (it._u || 0) >= out.resetAt && !(out.tomb[it.id] && out.tomb[it.id] >= (it._u || 0)))
@@ -1121,79 +1129,71 @@
     }
 
     // ---- sincronização com a nuvem ----
-    let syncTimer = null, syncing = false, pendingSync = false, lastSyncInfo = 'Ainda não sincronizado';
-    const scheduleSync = () => { clearTimeout(syncTimer); syncTimer = setTimeout(() => syncNow(false), 900); };
+    let syncTimer = null, syncing = false, pendingSync = false, lastSyncAt = 0, lastSyncInfo = 'Ainda não sincronizado';
+    const scheduleSync = () => { clearTimeout(syncTimer); syncTimer = setTimeout(() => syncNow(false), 3000); };
     function setSync(kind, text, detail) {
       const dot = $('sync-dot'), tx = $('sync-text'); if (!dot || !tx) return;
       dot.className = 'sync-dot sync-' + kind; tx.textContent = text;
       lastSyncInfo = detail || text;
       const d = $('sync-detail'); if (d) d.textContent = lastSyncInfo;
     }
-    async function ghFetch(path, opts) {
-      const c = ghCfg(); opts = opts || {};
-      const r = await fetch('https://api.github.com' + path, Object.assign({ cache: 'no-store' }, opts, {
-        headers: Object.assign({ 'Accept': 'application/vnd.github+json', 'Authorization': 'Bearer ' + c.token, 'X-GitHub-Api-Version': '2022-11-28' }, opts.headers || {})
-      }));
-      if (!r.ok) { let m = ''; try { const j = await r.clone().json(); m = j.message || ''; } catch (x) { } const e = new Error('GitHub ' + r.status + (m ? ': ' + m : '')); e.status = r.status; throw e; }
+    async function jbCall(method, body) {
+      const r = await fetch(`https://api.jsonbin.io/v3/b/${encodeURIComponent(jbBinId())}${method === 'GET' ? '/latest' : ''}`, {
+        method, cache: 'no-store',
+        headers: jbHeaders(method === 'GET' ? { 'X-Bin-Meta': 'false' } : { 'Content-Type': 'application/json' }),
+        body: method === 'GET' ? undefined : JSON.stringify(body)
+      });
+      if (!r.ok) {
+        let m = ''; try { const j = await r.clone().json(); m = j.message || ''; } catch (x) { }
+        const e = new Error('JSONBin ' + r.status + (m ? ': ' + m : '')); e.status = r.status; throw e;
+      }
       return r.json();
     }
-    async function ghFindGist() {
-      for (let p = 1; p <= 5; p++) {
-        const list = await ghFetch(`/gists?per_page=100&page=${p}`);
-        const hit = list.find(g => g.files && g.files[GH_FILE]);
-        if (hit) return hit.id;
-        if (list.length < 100) break;
+    // O plano gratuito do JSONBin tem limite de tamanho por bin: se passar, as imagens carregadas (data:) ficam só no aparelho.
+    function jbPayload() {
+      const data = JSON.parse(JSON.stringify(state)); let stripped = 0;
+      if (JSON.stringify(data).length > 90000) {
+        ['wishlist', 'stores'].forEach(c => (data[c] || []).forEach(it => {
+          if (typeof it.img === 'string' && it.img.startsWith('data:')) { it.img = ''; it.imgStripped = true; stripped++; }
+        }));
       }
-      return null;
+      return { data, stripped };
     }
-    async function ghReadGist(id) {
-      const g = await ghFetch('/gists/' + id);
-      const f = g.files && g.files[GH_FILE]; if (!f) return null;
-      let txt = f.content;
-      if (f.truncated || txt == null) { const r = await fetch(f.raw_url, { cache: 'no-store' }); txt = await r.text(); }
-      return JSON.parse(txt);
-    }
-    async function ghPushState() {
-      const c = ghCfg(); if (!c.token || !c.gistId) return;
-      try { await ghFetch('/gists/' + c.gistId, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ files: { [GH_FILE]: { content: JSON.stringify(state) } } }) }); } catch (e) { }
+    async function jbPushNow() {
+      if (!jbBinId()) return;
+      try { await jbCall('PUT', jbPayload().data); } catch (e) { }
     }
     async function syncNow(manual) {
-      const c = ghCfg();
-      if (!c.token) {
-        setSync('local', 'Só neste dispositivo', 'Os dados estão guardados neste navegador e mantêm-se depois de o fechares. Para os ter também noutros dispositivos, liga o GitHub em Definições › Segurança & Dados.');
-        if (manual) { openSettingsModal(); switchSettingsTab('security'); toast('Liga o GitHub para sincronizar entre dispositivos'); }
+      if (!jbBinId()) {
+        setSync('local', 'Só neste dispositivo', 'Os dados estão guardados neste navegador e mantêm-se depois de o fechares. Para os ter também noutros dispositivos, cola o ID do bin JSONBin em Definições › Segurança & Dados.');
+        if (manual) { openSettingsModal(); switchSettingsTab('security'); toast('Falta o ID do bin JSONBin'); }
         return;
       }
       if (!navigator.onLine) { setSync('err', 'Offline', 'Sem internet: as alterações ficam guardadas aqui e sincronizam quando voltares a ter ligação.'); if (manual) toast('Sem internet', 'error'); return; }
       if (syncing) { pendingSync = true; return; }
       syncing = true; setSync('busy', 'A sincronizar…');
       try {
-        let id = c.gistId, remote = null;
-        if (!id) { id = await ghFindGist(); if (id) { c.gistId = id; ghSave(c); } }
-        if (id) {
-          try { const raw = await ghReadGist(id); remote = raw ? normalize(raw) : null; }
-          catch (e) { if (e.status === 404) { id = null; delete c.gistId; ghSave(c); } else throw e; }
-        }
+        const raw = await jbCall('GET');
+        const remote = (raw && typeof raw === 'object') ? normalize(raw) : null;
         const before = canon(state);
         if (remote) state = mergeStates(state, remote);
         const after = canon(state);
         persistLocal();
-        const content = JSON.stringify(state);
-        if (!id) {
-          const g = await ghFetch('/gists', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ description: GH_DESC, public: false, files: { [GH_FILE]: { content } } }) });
-          c.gistId = g.id; ghSave(c);
-        } else if (!remote || after !== canon(remote)) {
-          await ghFetch('/gists/' + id, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ files: { [GH_FILE]: { content } } }) });
-        }
+        const pl = jbPayload();
+        if (!remote || canon(normalize(pl.data)) !== canon(remote)) await jbCall('PUT', pl.data);
         if (after !== before) onRemoteChange();
-        const hh = new Date(); setSync('ok', 'Sincronizado', `Última sincronização às ${pad(hh.getHours())}:${pad(hh.getMinutes())}:${pad(hh.getSeconds())}.`);
+        lastSyncAt = Date.now();
+        const hh = new Date();
+        setSync('ok', 'Sincronizado', `Última sincronização às ${pad(hh.getHours())}:${pad(hh.getMinutes())}:${pad(hh.getSeconds())}.` + (pl.stripped ? ` Atenção: o bin está quase cheio, por isso ${pl.stripped} imagem(ns) carregada(s) ficam só neste aparelho. Usa links de imagem para sincronizar.` : ''));
         if (manual) toast('Dados sincronizados');
       } catch (err) {
         console.warn('Sync:', err);
         let msg = String((err && err.message) || err);
-        if (err instanceof TypeError) msg = 'Sem acesso ao GitHub (internet, bloqueador de anúncios ou rede a bloquear api.github.com).';
-        else if (err && err.status === 401) msg = 'Token inválido ou expirado. Cria um novo e volta a ligar.';
-        else if (err && (err.status === 403 || err.status === 429)) msg = 'O GitHub recusou o pedido (limite atingido ou o token não tem o âmbito "gist").';
+        if (err instanceof TypeError) msg = 'Sem acesso ao JSONBin (internet, bloqueador de anúncios ou rede a bloquear api.jsonbin.io).';
+        else if (err && (err.status === 401 || err.status === 403)) msg = 'O JSONBin recusou o acesso: se o bin é privado, coloca a Master Key; se não, confirma o ID. (' + msg + ')';
+        else if (err && err.status === 404) msg = 'Bin não encontrado: confirma o ID do bin.';
+        else if (err && err.status === 429) msg = 'Limite de pedidos do JSONBin atingido. Tenta mais tarde.';
+        else if (err && (err.status === 400 || err.status === 413)) msg = 'O JSONBin recusou os dados (pode ter ultrapassado o tamanho máximo do plano). ' + msg;
         setSync('err', 'Erro de sincronização', msg + ' Os dados continuam guardados neste dispositivo.');
         if (manual) toast(msg, 'error');
       } finally {
@@ -1443,7 +1443,7 @@
             const k = Math.min(1, max / Math.max(im.width, im.height)); const c = document.createElement('canvas');
             c.width = Math.max(1, Math.round(im.width * k)); c.height = Math.max(1, Math.round(im.height * k));
             const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.drawImage(im, 0, 0, c.width, c.height);
-            res(c.toDataURL('image/jpeg', 0.78));
+            res(c.toDataURL('image/jpeg', 0.65));
           };
           im.src = fr.result;
         };
@@ -1452,7 +1452,7 @@
     }
     async function imgFile(id, input) {
       const f = input.files && input.files[0]; if (!f) return;
-      try { const d = await imgCompress(f, 480); $(id).value = ''; $(id + '-data').value = d; imgPaint(id); }
+      try { const d = await imgCompress(f, 260); $(id).value = ''; $(id + '-data').value = d; imgPaint(id); }
       catch (e) { toast('Não consegui ler essa imagem', 'error'); }
       input.value = '';
     }
@@ -1466,7 +1466,7 @@
         const src = (d && d.image && d.image.url) || (d && d.logo && d.logo.url) || '';
         if (!src) throw new Error('sem imagem');
         imgSet(id, src);
-        try { const b = await (await fetch(src)).blob(); const data = await imgCompress(b, 480); $(id).value = ''; $(id + '-data').value = data; imgPaint(id); } catch (e) { }
+        try { const b = await (await fetch(src)).blob(); const data = await imgCompress(b, 260); $(id).value = ''; $(id + '-data').value = data; imgPaint(id); } catch (e) { }
         toast('Imagem encontrada');
       } catch (e) { toast('Não encontrei imagem nesse link. Carrega uma ou cola o endereço.', 'error'); }
     }
@@ -2477,33 +2477,24 @@
           ${item.custom ? `<button onclick="showCustomTabModal('${item.cid}')" class="icon-btn" title="Editar HTML"><i class="fa-solid fa-pen"></i></button><button onclick="askDeleteCustomTab('${item.cid}')" class="icon-btn danger" title="Eliminar aba"><i class="fa-solid fa-trash"></i></button>` : ''}
         </div>`).join('');
     }
-    function renderGhPanel() {
-      const c = ghCfg(); const el = $('gh-state'); if (!el) return;
-      el.innerHTML = c.token ? `<span class="tag green"><i class="fa-solid fa-circle-check"></i>Ligado ao GitHub${c.gistId ? ' • Gist ' + esc(c.gistId.slice(0, 7)) + '…' : ''}</span>` : `<span class="tag"><i class="fa-solid fa-lock"></i>Desligado • dados só neste dispositivo</span>`;
-      $('gh-disconnect').classList.toggle('hidden', !c.token);
+    function renderJbPanel() {
+      const id = jbBinId(); const el = $('jb-state'); if (!el) return;
+      el.innerHTML = id ? `<span class="tag green"><i class="fa-solid fa-circle-check"></i>Ligado • bin ${esc(id.slice(0, 6))}…</span>` : `<span class="tag"><i class="fa-solid fa-lock"></i>Desligado • dados só neste dispositivo</span>`;
+      $('jb-id').value = id; $('jb-key').value = jbCfg().key || '';
+      $('jb-disconnect').classList.toggle('hidden', !jbCfg().binId);
     }
-    async function ghConnect() {
-      const tok = $('gh-token').value.replace(/\s+/g, ''); if (!tok) { shakeField('gh-token'); return; }
-      const fail = m => { setSync('err', 'Falha ao ligar', m); toast(m, 'error'); };
-      if (/^github_pat_/.test(tok)) { fail('Esse token é "fine-grained" e não suporta Gists. Cria um token CLÁSSICO (começa por ghp_) com a permissão gist.'); return; }
-      setSync('busy', 'A ligar…');
-      try {
-        const r = await fetch('https://api.github.com/user', { headers: { Authorization: 'Bearer ' + tok, Accept: 'application/vnd.github+json' } });
-        if (r.status === 401) { fail('Token inválido ou expirado. Confirma que o copiaste inteiro.'); return; }
-        if (!r.ok) { fail('GitHub respondeu com o erro ' + r.status + '.'); return; }
-        const sc = r.headers.get('X-OAuth-Scopes');
-        if (sc !== null && !/(^|,\s*)gist(\s*,|$)/.test(sc)) { fail('O token não tem a permissão "gist" (tem: ' + (sc || 'nenhuma') + '). Cria outro marcando gist.'); return; }
-        ghSave({ token: tok }); $('gh-token').value = ''; renderGhPanel(); toast('GitHub ligado');
-        await syncNow(true); renderGhPanel();
-      } catch (e) { fail(e instanceof TypeError ? 'Sem acesso ao GitHub (internet, bloqueador de anúncios ou rede a bloquear api.github.com).' : String(e.message || e)); }
+    async function jbConnect() {
+      const id = $('jb-id').value.replace(/\s+/g, ''); if (!id) { shakeField('jb-id'); return; }
+      jbSave({ binId: id, key: $('jb-key').value.trim() });
+      renderJbPanel(); await syncNow(true); renderJbPanel();
     }
-    function ghDisconnect() {
-      confirmDialog('Desligar a sincronização? Os dados ficam neste dispositivo; o Gist no GitHub não é apagado.', () => {
-        try { localStorage.removeItem('sidera_gh'); } catch (e) { }
-        renderGhPanel(); syncNow(false); toast('Sincronização desligada');
+    function jbDisconnect() {
+      confirmDialog('Desligar a sincronização? Os dados ficam neste dispositivo e o bin não é apagado.', () => {
+        try { localStorage.removeItem('sidera_jb'); } catch (e) { }
+        renderJbPanel(); syncNow(false); toast('Sincronização desligada');
       }, { yes: 'Desligar', icon: 'fa-link' });
     }
-    function openSettingsModal() { renderGhPanel(); showLayer('settings-modal'); switchSettingsTab('themes'); renderSettingsTabManager(); renderThemeGrid(); renderDisplayGrid(); $('sync-detail').textContent = lastSyncInfo; }
+    function openSettingsModal() { renderJbPanel(); showLayer('settings-modal'); switchSettingsTab('themes'); renderSettingsTabManager(); renderThemeGrid(); renderDisplayGrid(); $('sync-detail').textContent = lastSyncInfo; }
     function closeSettingsModal() { hideLayer('settings-modal'); }
     function switchSettingsTab(tab) {
       document.querySelectorAll('.set-panel').forEach(p => p.classList.add('hidden'));
@@ -2530,7 +2521,7 @@
       confirmDialog('Apagar TODOS os dados (incluindo na nuvem) e repor o sistema de fábrica?', async () => {
         const ts = Date.now(); state = emptyState(); state.resetAt = ts; state._u = ts; state.settings._u = ts;
         persistLocal();
-        await ghPushState();
+        await jbPushNow();
         ['sidera_nav_items', 'sidera_theme', 'sidera_tab'].forEach(k => localStorage.removeItem(k));
         location.reload();
       }, { yes: 'Apagar tudo', icon: 'fa-triangle-exclamation' });
@@ -2620,7 +2611,7 @@
         if (hit) { loadNote(hit.id); }
       });
       window.addEventListener('beforeunload', flushNote);
-      document.addEventListener('visibilitychange', () => { if (!document.hidden) { syncNow(false); if (Date.now() - wx.loadedAt > 10 * 60 * 1000) loadWeather(); } else flushNote(); });
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) { if (Date.now() - lastSyncAt > 60000) syncNow(false); if (Date.now() - wx.loadedAt > 10 * 60 * 1000) loadWeather(); } else flushNote(); });
       window.addEventListener('pagehide', flushNote);
       window.addEventListener('online', () => syncNow(false));
 
@@ -2629,7 +2620,7 @@
       let tab = 'dashboard'; try { tab = localStorage.getItem('sidera_tab') || 'dashboard'; } catch (e) { }
       switchTab(tab);
       loadWeather(); setInterval(() => { if (!document.hidden) loadWeather(); }, 10 * 60 * 1000);
-      syncNow(false); setInterval(() => { if (!document.hidden) syncNow(false); }, 30000);
+      syncNow(false); setInterval(() => { if (!document.hidden) syncNow(false); }, 5 * 60 * 1000);
     });
   </script>
 </body>
